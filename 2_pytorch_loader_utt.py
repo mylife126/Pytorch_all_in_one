@@ -6,6 +6,7 @@
 import numpy as np
 import os
 import torch
+from torch.optim import lr_scheduler
 import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
@@ -168,10 +169,17 @@ class MLPnet(nn.Module):
         self.nlayer = len(size_list) - 1
         self.layer_list = []
         
+        if self.nlayer < 3:
+            
+        
         for layer in range(1, self.nlayer):
             
+            
             self.layer_list.append(nn.Linear(self.size_list[layer - 1], self.size_list[layer]))
+            # add batch norm layer 
+            self.layer_list.append(nn.BatchNorm1d(self.size_list[layer]))
             self.layer_list.append(nn.ReLU())
+            self.layer_list.append(nn.Dropout(0.5))
             
         # The output layer doesn't need ReLU!
         self.layer_list.append(nn.Linear(self.size_list[self.nlayer - 1], self.size_list[self.nlayer]))
@@ -191,7 +199,7 @@ class MLPnet(nn.Module):
         
 # 2.3 Function for one epoch training
 
-def Train_epoch(model, train_loader, criterion, optimizer, device="cuda"):
+def Train_epoch(model, train_loader, criterion, optimizer, n_epochs, epoch_id, batch_num, scheduler, device="cuda"):
     
     # start training mode
     model.train()
@@ -208,6 +216,7 @@ def Train_epoch(model, train_loader, criterion, optimizer, device="cuda"):
     # load mini-batch
     for batch_idx, (inputs, targets) in enumerate(train_loader): 
         
+
         # for each mini-batch, remember to reset gradient!
         optimizer.zero_grad()   
         
@@ -224,17 +233,34 @@ def Train_epoch(model, train_loader, criterion, optimizer, device="cuda"):
         # add loss of one sample
         # tensor.item get a python number from a tensor containing a single value 
         running_loss += loss.item() 
+        one_loss = loss.item()
 
         # backprop
         loss.backward()
         
         # update para
-        optimizer.step()        
-        
-    end_time = time.time()
+        optimizer.step()   
     
+        # compute estimated time 
+        end_time = time.time()
+        
+        one_batch_time = (end_time - start_time) / (batch_idx + 1)
+        epoch_remain = n_epochs - epoch_id - 1
+        batch_remain = epoch_remain * batch_num + batch_num - batch_idx - 1
+        time_remain = batch_remain * one_batch_time 
+        
+        if batch_idx % 1000 == 0:
+        
+            print("Training epoch ", epoch_id)
+            print("Batch index ", batch_idx + 1)
+            print("Training Loss: ", one_loss)
+            print("Remaining time ", time_remain, "s")
+        
     running_loss /= len(train_loader)
-    print('Training Loss: ', running_loss, 'Time: ',end_time - start_time, 's')
+    print("=" * 20)
+    print("epoch {} training completed".format(epoch_id))
+    print("Training loss ", running_loss)
+
     return running_loss    
 
 # 2.4 Function for testing 
@@ -288,17 +314,19 @@ if __name__ == "__main__":
     train_path_labels = base + "/data/2_Utt/train_labels.npy"
     test_path_labels = base + "/data/2_Utt/test_labels.npy"
                                     
-    train_loader = DataLoader(Single_npy_dataset(train_path, train_path_labels,
+    train_dataset = Single_npy_dataset(train_path, train_path_labels,
                                                    [transforms.Compose([Totensor(), Padding_view()]),
                                                    transforms.Compose([Totensor()])],
-                                                   pad_coe=a.pad_coe),
-                                                    batch_size=a.batch_size, shuffle=True)
-                                    
-    test_loader = DataLoader(Single_npy_dataset(test_path, test_path_labels,
+                                                   pad_coe=a.pad_coe)
+    
+    
+    test_dataset = Single_npy_dataset(test_path, test_path_labels,
                                                    [transforms.Compose([Totensor(), Padding_view()]),
                                                    transforms.Compose([Totensor()])],
-                                                   pad_coe=a.pad_coe),
-                                                    batch_size=a.batch_size, shuffle=False)  
+                                                   pad_coe=a.pad_coe)
+    
+    train_loader = DataLoader(train_dataset, batch_size=a.batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=a.batch_size, shuffle=False)  
     
     # print info
     for i, (inputs, targets) in enumerate(train_loader):
@@ -314,25 +342,49 @@ if __name__ == "__main__":
     a.size_list[0] = input_size
     mlp_model = MLPnet(a.size_list)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(mlp_model.parameters())
+    optimizer = optim.Adam(mlp_model.parameters(), lr=0.001)
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    
     cuda = torch.cuda.is_available()
     device = torch.device("cuda" if cuda else "cpu")    
 
     print(mlp_model)
          
     
-        # 2.5 main
-    n_epochs = 10
+    # begin training 
+    n_epochs = 50
     Train_loss = []
     Test_loss = []
     Test_acc = []
     
+    batch_num = int(train_dataset.frame_num / a.batch_size)
+    print("Total batch number for training is ", batch_num) 
+    
+    
     for i in range(n_epochs):
-        train_loss = Train_epoch(mlp_model, train_loader, criterion, optimizer, device)
+
+        
+        train_loss = Train_epoch(mlp_model, train_loader, criterion, optimizer, n_epochs, i + 1, batch_num, scheduler, device)
         test_loss, test_acc = Test_model(mlp_model, test_loader, criterion, device)
         Train_loss.append(train_loss)
         Test_loss.append(test_loss)
         Test_acc.append(test_acc)
         print('='*20)    
+        
+    ind_array = np.arange(1, n_epochs + 1)
+    
+    fig1 = plt.figure()
+    plt.plot(ind_array, Train_loss)
+    
+    fig2 = plt.figure()
+    plt.plot(ind_array, Test_loss)
+    
+    fig3 = plt.figure()
+    plt.plot(ind_array, Test_acc)    
+        
+        
+        
+        
+    
     
             
