@@ -146,14 +146,14 @@ def Train_epoch(model, train_loader, criterion, optimizer, device="cpu"):
         
         # for each mini-batch, remember to reset gradient!
         optimizer.zero_grad()   
-        
+
         # put data into the device 
         data = data.to(device)
         target = target.long().to(device)
 
         # compute output
         outputs = model(data)
-        
+
         # compute criterion
         loss = criterion(outputs, target)
         
