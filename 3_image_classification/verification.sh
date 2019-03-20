@@ -1,0 +1,12 @@
+python -u main_verification.py \
+    --batch_size 32 \
+    --val_txt_path "hw2p2_check/validation_trials_verification.txt" \
+    --val_data_path "hw2p2_check/validation_verification" \
+    --val_sim_path "val.csv" \
+    --real_val_sim_path "real_val.csv" \
+    --test_sim_path "test.csv" \
+    --test_txt_path "hw2p2_check/test_trials_verification_student.txt" \
+    --test_data_path "hw2p2_check/test_verification" \
+    --checkpoint "saved_models/classification_medium/para_epoch13.pkl" \
+    --num_workers 4 \
+    --model "res50" 
