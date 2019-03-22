@@ -4,122 +4,183 @@ import torch.nn.utils.rnn as rnn
 from torch.utils.data import Dataset, DataLoader, TensorDataset
 import numpy as np
 import time
+import argparse 
 
-import shakespeare_data as sh
+def create_parser():
+    parser = argparse.ArgumentParser()
+    # hypers
+    parser.add_argument("--batch_size", type=int, help="batch size")
+    parser.add_argument("--max_epoch", type=int, help="max epochs")
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-print(DEVICE)
+    # paths
+    parser.add_argument("--train_data_path", type=str, help="train npy")
+    parser.add_argument("--train_label_path", type=str, help="train label npy")
+    parser.add_argument("--dev_data_path", type=str, help="dev npy")
+    parser.add_argument("--dev_label_path", type=str, help="dev label npy")
+    parser.add_argument("--test_data_path", type=str, help="test npy")
 
-# # Data - refer to shakespeare_data.py for details
-corpus = sh.read_corpus()
-# print("First 203 characters...Last 50 characters")
-# print("{}...{}".format(corpus[:203], corpus[-50:]))
-# print("Total character count: {}".format(len(corpus)))
-chars, charmap = sh.get_charmap(corpus)
-charcount = len(chars)
-# print("Unique character count: {}\n".format(len(chars)))
-shakespeare_array = sh.map_corpus(corpus, charmap)
-# print("shakespeare_array.shape: {}\n".format(shakespeare_array.shape))
-# small_example = shakespeare_array[:17]
-# print("First 17 characters as indices", small_example)
-# print("First 17 characters as characters:", [chars[c] for c in small_example])
-# print("First 17 character indices as text:\n", sh.to_text(small_example,chars))
+    # opts
+    parser.add_argument("--num_workers", type=int, help="number of processes in the loader")
 
-# Dataset class. Transform raw text into a set of sequences of fixed length, and extracts inputs and targets
-class TextDataset(Dataset):
-    def __init__(self, text, seq_len = 200): 
-        """
-        text is a long long string
-        """
-        # clip
-        n_seq = len(text) // seq_len
-        text = text[:n_seq * seq_len]
-        # transform origial text to 2d tensor, as a mini-batch
-        self.data = torch.tensor(text).view(-1,seq_len)
-    def __getitem__(self, i):
-        # get one seq, split into first n-1 chars and last n-1 chars
-        txt = self.data[i]
-        return txt[:-1],txt[1:]
+    # params
+    parser.add_argument("--device", type=str, help="cpu or gpu")
+
+
+    args = parser.parse_args()
+    return args
+
+
+class TrainDataset(Dataset):
+    def __init__(self, device, data_path, label_path):
+        self.data_path = data_path
+        self.label_path = label_path
+        self.device = device
+        self.raw_utt, self.raw_label = self.loadnpy()
+        self.info()
+        self.utts = [torch.tensor(self.raw_utt[i]) for i in range(self.raw_utt.shape[0])]
+        self.labels = [torch.tensor(self.raw_label[i]) for i in range(self.raw_label.shape[0])]
+
     def __len__(self):
-        # number of mini-batch
-        return self.data.size(0)
+        return len(self.utts)
 
-# Collate function. Transform a list of sequences into a batch. Passed as an argument to the DataLoader.
-# Returns data on the format seq_len x batch_size
-def collate(seq_list):
-    # seq_list is a list of tuples(inputs, targets)
-    # unsqueeze(1) change (199, ) to (199, 1)
-    inputs = torch.cat([s[0].unsqueeze(1) for s in seq_list], dim=1) 
-    targets = torch.cat([s[1].unsqueeze(1) for s in seq_list], dim=1)
-    return inputs, targets
+    def __getitem__(self, index):
+        return self.utts[index].to(self.device), self.labels[index].to(self.device)
 
-class CharLanguageModel(nn.Module):
+    def loadnpy(self):
+        data = np.load(self.data_path, encoding='bytes')
+        label = np.load(self.label_path, encoding='bytes')
+        return data, label
+    
+    def info(self):
+        print("utt has shape\t", self.raw_utt.shape)
+        print("utt[0] has shape\t", self.raw_utt[0].shape)
+        print("utt[250] has shape\t", self.raw_utt[250].shape)
+        print("label has shape\t", self.raw_label.shape)
+        print("label[0] has shape\t", self.raw_label[0].shape)
+        print("label[250] has shape\t", self.raw_label[250].shape)      
 
-    def __init__(self, vocab_size, embed_size, hidden_size, nlayers):
-        super(CharLanguageModel,self).__init__()
-        self.vocab_size = vocab_size
+class TestDataset(Dataset):
+    def __init__(self, device, data_path):
+        self.data_path = data_path
+        self.device = device
+        self.raw_utt = self.loadnpy()
+        self.info()
+        self.utts = [torch.tensor(self.raw_utt[i]) for i in range(self.raw_utt.shape[0])]
+
+    def __len__(self):
+        return len(self.utts)
+
+    def __getitem__(self, index):
+        return self.utts[index].to(self.device)
+
+    def loadnpy(self):
+        data = np.load(self.data_path, encoding='bytes')
+        return data
+    
+    def info(self):
+        print("utt has shape\t", self.raw_utt.shape)
+        print("utt[0] has shape\t", self.raw_utt[0].shape)
+        print("utt[250] has shape\t", self.raw_utt[250].shape)  
+
+def collate_utts(seq_list):
+    # seq_list has length batch_size, each element is a tuple of (utts, labels)
+    utts, labels = zip(*seq_list)
+    lens = [len(seq) for seq in utts] # length of utts
+    seq_order = sorted(range(len(lens)), key=lens.__getitem__, reverse=True) # index of biggest to smallest
+    utts = [utts[i] for i in seq_order]
+    labels = [labels[i] for i in seq_order]
+    return utts, labels 
+
+def collate_utts_test(seq_list):
+    # seq_list has length batch_size, each element is a tuple of (utts, labels)
+    utts = seq_list
+    lens = [len(seq) for seq in utts] # length of utts
+    seq_order = sorted(range(len(lens)), key=lens.__getitem__, reverse=True) # index of biggest to smallest
+    utts = [utts[i] for i in seq_order]
+    return utts
+
+def create_loader(args):
+    print("="*50, "dataset", "="*50)
+    train_dataset = TrainDataset(args.device, args.train_data_path, args.train_label_path)
+    dev_dataset = TrainDataset(args.device, args.dev_data_path, args.dev_label_path)
+    test_dataset = TestDataset(args.device, args.test_data_path)
+    print("="*50, "dataloader", "="*50)
+    train_loader = DataLoader(train_dataset, shuffle=True, batch_size=args.batch_size, num_workers=args.num_workers, 
+                            drop_last=False, collate_fn = collate_utts)
+    dev_loader = DataLoader(dev_dataset, shuffle=True, batch_size=args.batch_size, num_workers=args.num_workers, 
+                            drop_last=True, collate_fn = collate_utts)
+    test_loader = DataLoader(test_dataset, shuffle=False, batch_size=args.batch_size, num_workers=args.num_workers, 
+                            drop_last=False, collate_fn = collate_utts_test)                            
+    print("Train dataset has %d utts in total" % (train_dataset.__len__()))
+    print("Dev dataset has %d utts in total" % (dev_dataset.__len__()))
+    print("Test dataset has %d utts in total" % (test_dataset.__len__()))    
+    for idx, (utts, labels) in enumerate(train_loader):
+        print("batch size is %d" %len(utts))
+        print("one utt has shape:\t", utts[2].shape)
+        print("one label shape:\t", labels[0].shape)
+        break     
+    return train_loader, dev_loader, test_loader
+
+class CTCModel(nn.Module):
+    def __init__(self, phoneme_size, embed_size, hidden_size, nlayers):
+        super(CTCModel,self).__init__()
+        self.phoneme_size = phoneme_size
         self.embed_size = embed_size
         self.hidden_size = hidden_size
         self.nlayers = nlayers
-        self.embedding = nn.Embedding(vocab_size, embed_size) # Embedding layer (num_embeddings, embedding_dim)
+        self.embedding = nn.Linear(phoneme_size, embed_size) # Embedding layer (num_embeddings, embedding_dim)
         self.rnn = nn.LSTM(input_size = embed_size,hidden_size=hidden_size,num_layers=nlayers) # Recurrent network
-        self.scoring = nn.Linear(hidden_size, vocab_size) # Projection layer
+        self.scoring = nn.Linear(hidden_size, phoneme_size) # Projection layer
+
+    def forward(self, utts):
+        # pad utts
+        batch_size = len(utts)
+        lens = [len(s) for s in utts] # lens of all utts (already sorted)
+        padded = rnn.pad_sequence(utts) # padded utts (max_seq_len, batch, 40)
+        padded_flatten = padded.view(-1, )
+
+        print(padded.shape)
+
         
-    def forward(self, seq_batch): 
-        """
-        Input seq_batch has shape(seq_len, batch), like(199, 32)
-        """
-        batch_size = seq_batch.size(1)
-        embed = self.embedding(seq_batch)   # input: LongTensor of arbitrary shape containing the indices to extract
-                                            # output shape (*, embed_size), * is the input shape
-        hidden = None
-        output_lstm, hidden = self.rnn(embed, hidden)  # input: (seq_len, batch, input_size)
-                                                       # output shape (seq_len, batch, hidden_size)
         
-        print(output_lstm.shape)
-        print(len(hidden))
-        output_lstm_flatten = output_lstm.view(-1, self.hidden_size) # shape(seq_len * batch, hidden_size)
-        output_flatten = self.scoring(output_lstm_flatten) # (seq_len * batch, vocab_size)
-        return output_flatten.view(-1,batch_size,self.vocab_size) # (seq_len, batch, vocab_size)
 
-def train_epoch(model, train_loader, val_loader, optimizer, criterion):
-    
-    model = model.to(DEVICE)
-    start_time = time.time()
-    for idx, (inputs, targets) in enumerate(train_loader):
-        inputs = inputs.to(DEVICE)
-        targets = targets.to(DEVICE)
-        outputs = model.forward(inputs)
-
-    
-
-def fix_length_main():
-
-    # **** dataset **** #
-    print("=" * 50, "dataset", "=" * 50)
-    split = 5000000
-    train_dataset = TextDataset(shakespeare_array[:split])
-    val_dataset = TextDataset(shakespeare_array[split:])
-    print("train dataset has length %d" %train_dataset.__len__()) # 200 * 2500
-    print("val dataset has length %d" %val_dataset.__len__())
-    # **** dataloader **** #
-    print("=" * 50, "dataloader", "=" * 50)
-    train_loader = DataLoader(train_dataset, shuffle=True, batch_size=64, collate_fn = collate)
-    val_loader = DataLoader(val_dataset, shuffle=False, batch_size=64, collate_fn = collate, drop_last=True)  
-    for idx, (inputs, targets) in enumerate(train_loader):
-        print("inputs have size" , inputs.shape) # 199 * 64, not 64 * 199 due to the collate_fn
-        print("targets have size", targets.shape) 
+def train_epoch(args, model, train_loader, dev_loader, test_loader, optimizer):
+    for idx, (utts, labels) in enumerate(train_loader):
+        outputs = model.forward(utts)
         break
-    # **** model **** #
-    model = CharLanguageModel(charcount, 256, 256, 3) # 
-    # **** optimizer **** #
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-6)
-    # **** criterion **** #
-    criterion = nn.CrossEntropyLoss()
-    # **** train **** #
-    for epoch in range(3):
-        print("training epoch %d" %epoch)
-        train_epoch(model, train_loader, val_loader, optimizer, criterion)
 
 
-fix_length_main()
+
+def main():
+    # create parser 
+    args = create_parser()
+    # specify device
+    args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("using device %s" %args.device)
+    # create dataset and dataloader 
+    train_loader, dev_loader, test_loader = create_loader(args)
+    # create model 
+    print("="*50, "model", "="*50)
+    model = CTCModel(40, 256, 256, 3)
+    model.to(args.device)
+    print(model)
+    print("="*50, "model parameters", "="*50)
+    for idx, para in enumerate(model.parameters()):
+        print(idx, para.shape)
+    # create optimizer 
+    optimizer = torch.optim.Adam(model.parameters(),lr=0.001, weight_decay=1e-6)
+    
+    # begin training 
+    for epoch in range(args.max_epoch):
+        print("="*50, "training epoch %d" %epoch, "="*50)
+        train_epoch(args, model, train_loader, dev_loader, test_loader, optimizer)
+        
+
+
+
+
+
+
+
+
+main()
